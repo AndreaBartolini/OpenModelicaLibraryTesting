@@ -28,7 +28,7 @@ parser.add_argument('--branch', default='master')
 parser.add_argument('--fmi', default=False)
 parser.add_argument('--output', default='')
 parser.add_argument('--docker', default='')
-parser.add_argument('--libraries', help="Directory omc will search in to load system libraries/libraries to test.", default=os.path.normpath(os.path.expanduser('~/.openmodelica/libraries/')))
+parser.add_argument('--libraries', help="Directory omc will search in to load system libraries/libraries to test.", default='')
 parser.add_argument('--extraflags', default='')
 parser.add_argument('--extrasimflags', default='')
 parser.add_argument('--ompython_omhome', default='')
@@ -39,7 +39,6 @@ parser.add_argument('--default', action='append', help="Add a default value for 
 parser.add_argument('-j', '--jobs', default=0)
 parser.add_argument('-v', '--verbose', action="store_true", help="Verbose mode.", default=False)
 parser.add_argument('--execAllTests', action="store_true", help="Force all tests to be executed", default=False)
-parser.add_argument('--win', action="store_true", help="Windows mode", default=False)
 parser.add_argument('--noSync', action="store_true", help="Move files using python instead of rsync", default=False)
 parser.add_argument('--timeout', default=0, help="=[value] timeout in seconds for each test, it overrides the timeout calculated by the script")
 
@@ -57,11 +56,19 @@ fmisimulator = args.fmisimulator or None
 allTestsFmi = args.fmi
 ulimitMemory = args.ulimitvmem
 docker = args.docker
-librariespath = os.path.abspath(args.libraries)
+isWin = os.name == 'nt'
+librariespath = ''
+if args.libraries:
+  librariespath = os.path.abspath(os.path.normpath(args.libraries))
+else:
+  if isWin:
+    librariespath = os.path.normpath(os.path.join(os.environ.get('APPDATA'), '.openmodelica', 'libraries'))
+  else:
+    librariespath = os.path.normpath(os.path.join(os.environ.get('HOME'), '.openmodelica', 'libraries'))
 overrideDefaults = [arg.split("=", 1) for arg in args.default]
 execAllTests = args.execAllTests
-isWin = args.win
 noSync = args.noSync
+
 exeExt = ".exe" if isWin else ""
 customTimeout = int(args.timeout)
 
@@ -73,10 +80,10 @@ def rmtree(f):
     subprocess.check_call(["rm", "-rf", f], stderr=subprocess.STDOUT)
 
 def print_linenum(signum, frame):
-    print("Currently at line", frame.f_lineno)
+  print("Currently at line", frame.f_lineno)
 
 if not isWin:
-    signal(signal.SIGUSR1, print_linenum)
+  signal.signal(signal.SIGUSR1, print_linenum)
 
 def runCommand(cmd, prefix, timeout):
   process = [None]
@@ -86,7 +93,7 @@ def runCommand(cmd, prefix, timeout):
         process[0] = subprocess.Popen(cmd, shell=True, stdin=FNULL, stdout=FNULL, stderr=FNULL)
       else:
         process[0] = subprocess.Popen(cmd, shell=True, stdin=FNULL, stdout=FNULL, stderr=FNULL, preexec_fn=os.setpgrp)
-      
+
       while process[0].poll() is None:
         print("process running... pid: " + str(process[0].pid) + " timeout: " + str(timeout) + " cmd: " + cmd.split('>',1)[0])
         process[0].communicate(1)
@@ -140,11 +147,8 @@ def runCommand(cmd, prefix, timeout):
   return 1 if gotTimeout else process[0].returncode
 
 try:
-  if isWin:
-    subprocess.check_output(["python", "testmodel.py", "--help"], stderr=subprocess.STDOUT)
-  else:
-    subprocess.check_output(["./testmodel.py", "--help"], stderr=subprocess.STDOUT)
-  
+  subprocess.check_output(["python", "testmodel.py", "--help"], stderr=subprocess.STDOUT)
+
 except subprocess.CalledProcessError as e:
   print("Sanity check failed (./testmodel.py --help):\n" + e.output.decode())
   sys.exit(1)
@@ -185,11 +189,7 @@ else:
   commands = []
   dockerExtraArgs = []
   if os.environ.get("OPENMODELICAHOME"):
-    if isWin:
-      omc_cmd = ["%sbin\\omc" % os.environ.get("OPENMODELICAHOME")]
-    else:
-      omc_cmd = ["%s/bin/omc" % os.environ.get("OPENMODELICAHOME")]
-  
+    omc_cmd = [os.path.normpath(os.path.join(os.environ.get("OPENMODELICAHOME"), 'bin', 'omc'))]
   else:
     omc_cmd = ["omc"]
 if result_location != "" and not os.path.exists(result_location):
@@ -200,8 +200,6 @@ if configs == []:
   sys.exit(1)
 
 from OMPython import OMCSession, OMCSessionZMQ
-
-version_cmd = "--version"
 
 # Try to make the processes a bit nicer...
 os.environ["GC_MARKERS"]="1"
@@ -236,7 +234,7 @@ sys.stdout.flush()
 
 # Do feature checks. Handle things like old RML-style arguments...
 
-subprocess.check_output(omc_cmd + ["-n=1", version_cmd], stderr=subprocess.STDOUT).strip()
+subprocess.check_output(omc_cmd + ["-n=1", "--version"], stderr=subprocess.STDOUT).strip()
 
 sys.stdout.flush()
 
@@ -406,7 +404,8 @@ for (lib,c) in configs:
       subprocess.check_call(["git", "fetch", "origin"], stderr=subprocess.STDOUT, cwd=destination)
       subprocess.check_call(["git", "reset", "--hard", refFilesGitTag], stderr=subprocess.STDOUT, cwd=destinationReal)
       subprocess.check_call(["git", "clean", "-fdx", "--exclude=*.hash"], stderr=subprocess.STDOUT, cwd=destinationReal)
-      subprocess.check_call(["find", ".", "-name", "*.mat.xz", "-exec", "xz", "--decompress", "--keep", "{}", ";"], stderr=subprocess.STDOUT, cwd=destinationReal)
+      if glob.glob(destinationReal + "/*.mat.xz"):
+        subprocess.check_call(["find", ".", "-name", "*.mat.xz", "-exec", "xz", "--decompress", "--keep", "{}", ";"], stderr=subprocess.STDOUT, cwd=destinationReal)
       githash = subprocess.check_output(["git", "rev-parse", "--verify", "HEAD"], stderr=subprocess.STDOUT, cwd=destinationReal, encoding='utf8')
 
       if "git-directory" in c["referenceFiles"]:
@@ -836,7 +835,7 @@ def cpu_name():
     for line in open("/proc/cpuinfo").readlines():
       if "model name" in line.strip():
         return (re.sub( ".*model name.*:", "", line,1)).strip()
- 
+
 if isWin:
   lsb_release = ""
 else:
@@ -953,7 +952,7 @@ for libname in stats_by_libname.keys():
     (u"#testsHTML#", testsHTML)
   )
   open("%s.html" % libname, "w").write(multiple_replace(htmltpl, *replacements))
-  
+
   # move results by sync operations (not available under win)
   if result_location != "" and not isWin and not noSync:
     result_location_libname = "%s/%s" % (result_location, libname)
@@ -991,7 +990,7 @@ for libname in stats_by_libname.keys():
         shutil.copy2("./" + libname + ".html", libPath)
     except:
       print("-- problem durin copy/move of html file of lib: " + libname)
-    
+
     for file in glob.glob("./files/" + libname + '*.err') \
               + glob.glob("./files/" + libname + '*.sim') \
               + glob.glob("./files/" + libname + '*.csv') \
